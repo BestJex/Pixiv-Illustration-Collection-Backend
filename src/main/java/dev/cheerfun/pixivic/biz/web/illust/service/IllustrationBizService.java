@@ -23,10 +23,13 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PostConstruct;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.stream.Collectors;
 
 /**
@@ -43,6 +46,39 @@ public class IllustrationBizService {
     private final IllustrationBizMapper illustrationBizMapper;
     private final IllustrationService illustrationService;
     private final StringRedisTemplate stringRedisTemplate;
+    private LinkedBlockingQueue<Integer> waitForPullIllustQueue;
+    private final ExecutorService crawlerExecutorService;
+
+    @PostConstruct
+    public void init() {
+        waitForPullIllustQueue = new LinkedBlockingQueue<>(1000 * 1000);
+        dealWaitForPullIllustQueue();
+    }
+
+    public void dealWaitForPullIllustQueue() {
+        crawlerExecutorService.submit(() -> {
+            while (true) {
+                Integer illustId;
+                try {
+                    illustId = waitForPullIllustQueue.take();
+                    log.info("开始从pixiv获取画作：" + illustId);
+                    Illustration illustration = illustrationService.pullIllustrationInfo(illustId);
+                    if (illustration != null) {
+                        List<Illustration> illustrations = new ArrayList<>(1);
+                        illustrations.add(illustration);
+                        illustrationService.saveToDb(illustrations);
+                        log.info("获取画作：" + illustId + "完毕");
+                    } else {
+                        log.info("画作：" + illustId + "在pixiv上不存在");
+                    }
+
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+
+    }
 
     @Cacheable(value = "tagTranslation")
     public Tag translationTag(String tag) {
@@ -54,6 +90,7 @@ public class IllustrationBizService {
         Map<String, Object> context = AppContext.get();
         if (context != null && context.get(AuthConstant.USER_ID) != null) {
             int userId = (int) context.get(AuthConstant.USER_ID);
+            //log.info("用户:" + userId + "开始获取画作:" + illustId);
             Boolean isBookmarked = stringRedisTemplate.opsForSet().isMember(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustId));
             //businessService.queryIsBookmarked(userId, illustId);
             illustration = new IllustrationWithLikeInfo(illustration, isBookmarked);
@@ -68,15 +105,10 @@ public class IllustrationBizService {
     public Illustration queryIllustrationById(Integer illustId) {
         Illustration illustration = illustrationBizMapper.queryIllustrationByIllustId(illustId);
         if (illustration == null) {
-            log.info("开始爬取" + illustId);
-            illustration = illustrationService.pullIllustrationInfo(illustId);
-            if (illustration == null) {
-                throw new BusinessException(HttpStatus.NOT_FOUND, "画作不存在或为限制级图片");
-            } else {
-                List<Illustration> illustrations = new ArrayList<>(1);
-                illustrations.add(illustration);
-                illustrationService.saveToDb(illustrations);
-            }
+            log.info("画作：" + illustId + "不存在，加入队列等待爬取");
+            waitForPullIllustQueue.offer(illustId);
+            throw new BusinessException(HttpStatus.NOT_FOUND, "画作不存在或为限制级图片");
+            /* */
         }
         return illustration;
     }
@@ -162,17 +194,11 @@ public class IllustrationBizService {
     }
 
     public void dealIsLikedInfoForIllustList(List<Illustration> illustrationList, int userId) {
-        List<Object> isFollowedList = stringRedisTemplate.executePipelined((RedisCallback<String>) redisConnection -> {
-            for (Illustration illustration : illustrationList) {
-                StringRedisConnection stringRedisConnection = (StringRedisConnection) redisConnection;
-                stringRedisConnection.sIsMember(RedisKeyConstant.ARTIST_FOLLOW_REDIS_PRE + illustration.getArtistId(), String.valueOf(userId));
-            }
-            return null;
-        });
-        int size = isFollowedList.size();
+        int size = illustrationList.size();
         for (int i = 0; i < size; i++) {
             IllustrationWithLikeInfo illustrationWithLikeInfo = new IllustrationWithLikeInfo(illustrationList.get(i), true);
-            illustrationWithLikeInfo.setArtistPreView(new ArtistPreViewWithFollowedInfo(illustrationWithLikeInfo.getArtistPreView(), (Boolean) isFollowedList.get(i)));
+            Boolean isFollow = stringRedisTemplate.opsForSet().isMember(RedisKeyConstant.ARTIST_FOLLOW_REDIS_PRE + illustrationList.get(i).getArtistId(), String.valueOf(userId));
+            illustrationWithLikeInfo.setArtistPreView(new ArtistPreViewWithFollowedInfo(illustrationWithLikeInfo.getArtistPreView(), isFollow));
             illustrationList.set(i, illustrationWithLikeInfo);
         }
     }

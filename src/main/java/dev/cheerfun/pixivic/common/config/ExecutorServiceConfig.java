@@ -3,7 +3,6 @@ package dev.cheerfun.pixivic.common.config;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.*;
 
@@ -17,13 +16,69 @@ import java.util.concurrent.*;
 public class ExecutorServiceConfig {
     @Bean(name = "executorService")
     public ExecutorService executorService() {
-        ThreadFactory namedThreadFactory = new ThreadFactoryBuilder().setNameFormat("httpclient-pool-%d").build();
+        ThreadFactory namedThreadFactory = new ThreadFactoryBuilder().setNameFormat("common-pool-%d").build();
+        return new ThreadPoolExecutor(
+                4,
+                40,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(1024 * 10),
+                namedThreadFactory,
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+    }
+
+    @Bean(name = "crawlerExecutorService")
+    public ExecutorService crawlerExecutorService() {
+        ThreadFactory namedThreadFactory = new ThreadFactoryBuilder().setNameFormat("crawler-pool-%d").build();
         return new ThreadPoolExecutor(
                 4,
                 40,
                 0L,
                 TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(1024),
+                namedThreadFactory,
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+    }
+
+    @Bean(name = "mailExecutorService")
+    public ExecutorService mailExecutorService() {
+        ThreadFactory namedThreadFactory = new ThreadFactoryBuilder().setNameFormat("mail-pool-%d").build();
+        return new ThreadPoolExecutor(
+                4,
+                40,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(1024),
+                namedThreadFactory,
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+    }
+
+    @Bean(name = "recommendDownGradeExecutorService")
+    public ExecutorService recommendDownGradeExecutorService() {
+        ThreadFactory namedThreadFactory = new ThreadFactoryBuilder().setNameFormat("recommendDowngrade-pool-%d").build();
+        return new ThreadPoolExecutor(
+                4,
+                40,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(1024),
+                namedThreadFactory,
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+    }
+
+    @Bean(name = "saveToDBExecutorService")
+    public ExecutorService saveToDBExecutorService() {
+        ThreadFactory namedThreadFactory = new ThreadFactoryBuilder().setNameFormat("saveToDB-pool-%d").build();
+        return new ThreadPoolExecutor(
+                4,
+                40,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(1024 * 10),
                 namedThreadFactory,
                 new ThreadPoolExecutor.AbortPolicy()
         );
@@ -37,15 +92,10 @@ public class ExecutorServiceConfig {
                 10,
                 0L,
                 TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(1024),
+                new LinkedBlockingQueue<>(1024 * 10),
                 namedThreadFactory,
                 new ThreadPoolExecutor.AbortPolicy()
         );
-    }
-
-    //@Bean(name = "threadPoolTaskExecutor")
-    public Executor threadPoolTaskExecutor() {
-        return new ThreadPoolTaskExecutor();
     }
 
 }

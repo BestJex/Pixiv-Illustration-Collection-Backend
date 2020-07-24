@@ -7,6 +7,7 @@ import dev.cheerfun.pixivic.biz.web.collection.po.Collection;
 import dev.cheerfun.pixivic.biz.web.collection.service.CollectionService;
 import dev.cheerfun.pixivic.biz.web.common.exception.BusinessException;
 import dev.cheerfun.pixivic.biz.web.illust.service.IllustrationBizService;
+import dev.cheerfun.pixivic.biz.web.recommend.service.RecommendBizService;
 import dev.cheerfun.pixivic.biz.web.user.dto.ArtistWithRecentlyIllusts;
 import dev.cheerfun.pixivic.biz.web.user.mapper.BusinessMapper;
 import dev.cheerfun.pixivic.common.constant.AuthConstant;
@@ -20,11 +21,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.cache.annotation.Caching;
-import org.springframework.dao.DataAccessException;
-import org.springframework.data.redis.connection.StringRedisConnection;
-import org.springframework.data.redis.core.RedisCallback;
-import org.springframework.data.redis.core.RedisOperations;
-import org.springframework.data.redis.core.SessionCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -51,6 +47,7 @@ public class BusinessService {
     private final IllustrationBizService illustrationBizService;
     private final ArtistBizService artistBizService;
     private final CollectionService collectionService;
+    private final RecommendBizService recommendBizService;
 
     private static List<List<Integer>> split(List<Integer> illustrationIdList) {
         List<List<Integer>> result = new ArrayList<>();
@@ -92,6 +89,8 @@ public class BusinessService {
 
     public void bookmark(int userId, String username, int illustId) {
         bookmarkOperation(userId, username, illustId, 1, 0);
+        recommendBizService.deleteFromRecommendationSet(userId, RedisKeyConstant.USER_RECOMMEND_BOOKMARK_ILLUST, illustId);
+        recommendBizService.deleteFromRecommendationSet(userId, RedisKeyConstant.USER_RECOMMEND_VIEW_ILLUST, illustId);
     }
 
     public void cancelBookmark(int userId, int illustId, int relationId) {
@@ -108,23 +107,27 @@ public class BusinessService {
 //        ) {
 //            throw new BusinessException(HttpStatus.BAD_REQUEST, "用户与画作的收藏关系请求错误");
 //        }
-        stringRedisTemplate.execute(new SessionCallback<>() {
-            @Override
-            public List<Object> execute(RedisOperations operations) throws DataAccessException {
-                operations.multi();
-                if (increment > 0) {
-                    operations.opsForSet().add(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustId));
-                    //异步往mysql中写入
-                    businessMapper.bookmark(userId, illustId, username, LocalDateTime.now());
-                } else {
-                    operations.opsForSet().remove(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustId));
-                    //异步往mysql中移除
-                    businessMapper.cancelBookmark(userId, illustId);
-                }
-                operations.opsForHash().increment(RedisKeyConstant.BOOKMARK_COUNT_MAP_REDIS_PRE, String.valueOf(illustId), increment);
-                return operations.exec();
+
+        try {
+            if (increment > 0) {
+                stringRedisTemplate.opsForSet().add(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustId));
+                //异步往mysql中写入
+                businessMapper.bookmark(userId, illustId, username, LocalDateTime.now());
+            } else {
+                stringRedisTemplate.opsForSet().remove(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustId));
+                //异步往mysql中移除
+                businessMapper.cancelBookmark(userId, illustId);
             }
-        });
+            stringRedisTemplate.opsForHash().increment(RedisKeyConstant.BOOKMARK_COUNT_MAP_REDIS_PRE, String.valueOf(illustId), increment);
+        } catch (Exception e) {
+            if (increment > 0) {
+                stringRedisTemplate.opsForSet().remove(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustId));
+            } else {
+                stringRedisTemplate.opsForSet().add(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustId));
+            }
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "未知错误");
+        }
+
     }
 
     //@Scheduled(cron = "0 0 16 * * ?")
@@ -160,6 +163,7 @@ public class BusinessService {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "重复收藏");
         }
         stringRedisTemplate.opsForSet().add(RedisKeyConstant.ARTIST_FOLLOW_REDIS_PRE + artistId, String.valueOf(userId));
+        recommendBizService.deleteFromRecommendationSet(userId, RedisKeyConstant.USER_RECOMMEND_ARTIST, artistId);
     }
 
     @Caching(evict = {
@@ -182,13 +186,14 @@ public class BusinessService {
                 if (user == userId) {
                     isFollowedList = artists.stream().map(e -> true).collect(Collectors.toList());
                 } else {
-                    isFollowedList = stringRedisTemplate.executePipelined((RedisCallback<String>) redisConnection -> {
+                    isFollowedList = artists.stream().map(e -> stringRedisTemplate.opsForSet().isMember(RedisKeyConstant.ARTIST_FOLLOW_REDIS_PRE + e.getId(), String.valueOf(user))).collect(Collectors.toList());
+                   /* isFollowedList = stringRedisTemplate.executePipelined((RedisCallback<String>) redisConnection -> {
                         for (Artist artist : artists) {
                             StringRedisConnection stringRedisConnection = (StringRedisConnection) redisConnection;
                             stringRedisConnection.sIsMember(RedisKeyConstant.ARTIST_FOLLOW_REDIS_PRE + artist.getId(), String.valueOf(user));
                         }
                         return null;
-                    });
+                    });*/
                 }
                 for (int i = 0; i < artists.size(); i++) {
                     artistBizService.dealArtist(artists.get(i));
@@ -253,24 +258,24 @@ public class BusinessService {
     @Transactional
     public void bookmarkCollection(Integer userId, String username, Integer collectionId) {
         businessMapper.bookmarkCollection(userId, username, collectionId);
-        //collectionService.modifyTotalBookmark(collectionId, 1);
+        collectionService.modifyUserTotalBookmarkCollection(userId, 1);
         stringRedisTemplate.opsForSet().add(RedisKeyConstant.COLLECTION_BOOKMARK_REDIS_PRE + collectionId, String.valueOf(userId));
     }
 
     @Transactional
     public void cancelBookmarkCollection(int userId, int collectionId) {
         businessMapper.cancelBookmarkCollection(userId, collectionId);
-        // collectionService.modifyTotalBookmark(collectionId, -1);
+        collectionService.modifyUserTotalBookmarkCollection(userId, -1);
         stringRedisTemplate.opsForSet().remove(RedisKeyConstant.COLLECTION_BOOKMARK_REDIS_PRE + collectionId, String.valueOf(userId));
     }
 
     public void likeCollection(Integer userId, Integer collectionId) {
-        stringRedisTemplate.opsForValue().increment(RedisKeyConstant.COLLECTION_LIKE_REDIS_PRE + collectionId, 1);
+        stringRedisTemplate.opsForSet().add(RedisKeyConstant.COLLECTION_LIKE_REDIS_PRE + collectionId, String.valueOf(userId));
         //collectionService.modifyLikeCount(collectionId, 1);
     }
 
     public void cancelLikeCollection(int userId, int collectionId) {
-        stringRedisTemplate.opsForValue().decrement(RedisKeyConstant.COLLECTION_LIKE_REDIS_PRE + collectionId, 1);
+        stringRedisTemplate.opsForSet().remove(RedisKeyConstant.COLLECTION_LIKE_REDIS_PRE + collectionId, String.valueOf(userId));
         // collectionService.modifyLikeCount(collectionId, -1);
     }
 
@@ -285,6 +290,10 @@ public class BusinessService {
     public List<Collection> queryBookmarkCollection(Integer userId, Integer page, Integer pageSize) {
         List<Integer> collectionIdList = businessMapper.queryBookmarkCollection(userId, (page - 1), pageSize);
         return collectionService.queryCollectionById(collectionIdList);
+    }
+
+    public Integer queryUserTotalBookmarkCollection(Integer userId) {
+        return collectionService.queryUserTotalBookmarkCollection(userId);
     }
 
     private static class NewInteger {

@@ -26,6 +26,7 @@ public class Advertisement extends IllustrationWithLikeInfo {
     public Advertisement(AdvertisementInfo advertisementInfo) {
         title = advertisementInfo.getTitle();
         imageUrls = new ArrayList<>(1);
+        pageCount = 1;
         ImageUrl imageUrl = new ImageUrl();
         String adImageUrl = advertisementInfo.getImageUrl();
         imageUrl.setLarge(adImageUrl);
@@ -39,7 +40,7 @@ public class Advertisement extends IllustrationWithLikeInfo {
         artistPreView = new ArtistPreViewWithFollowedInfo(null, advertisementInfo.getAdvertiserName(), null, advertisementInfo.getAdvertiserAvatar(), false);
         link = advertisementInfo.getLink();
         adId = advertisementInfo.getId();
-        sanityLevel = 0;
+        sanityLevel = 4;
         restrict = 0;
         xRestrict = 0;
         isLiked = false;

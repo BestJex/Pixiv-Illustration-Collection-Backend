@@ -7,9 +7,7 @@ import dev.cheerfun.pixivic.common.constant.RedisKeyConstant;
 import dev.cheerfun.pixivic.common.po.Illustration;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.connection.RedisConnection;
-import org.springframework.data.redis.core.Cursor;
-import org.springframework.data.redis.core.ScanOptions;
+import org.springframework.data.redis.connection.RedisClusterNode;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -19,9 +17,9 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
@@ -40,7 +38,7 @@ public class IllustHistoryService {
     public void push(IllustHistory illustHistory) {
         stringRedisTemplate.opsForZSet().add(RedisKeyConstant.ILLUST_BROWSING_HISTORY_REDIS_PRE + illustHistory.getUserId(), String.valueOf(illustHistory.getIllustId()), illustHistory.getCreateAt().toEpochSecond(ZoneOffset.of("+8")));
         //异步入临时表
-        CompletableFuture.runAsync(() -> illustHistoryMapper.insertToTemp(illustHistory));
+        illustHistoryMapper.insertToTemp(illustHistory);
     }
 
     public List<Illustration> pullFromRedis(int userId, int page, int pageSize) {
@@ -71,16 +69,22 @@ public class IllustHistoryService {
     @Scheduled(cron = "0 10 2 * * ?")
     @Transactional(rollbackFor = Exception.class)
     public void clear() {
-        System.out.println("开始清理收藏");
-        //获取keylist
+        System.out.println("开始清理历史记录");
+        Iterator<RedisClusterNode> iterator = stringRedisTemplate.getConnectionFactory().getClusterConnection().clusterGetNodes().iterator();
+        while (iterator.hasNext()) {
+            RedisClusterNode clusterNode = iterator.next();
+            Set<String> keys = stringRedisTemplate.opsForCluster().keys(clusterNode, RedisKeyConstant.ILLUST_BROWSING_HISTORY_REDIS_PRE + "*");
+            stringRedisTemplate.unlink(keys);
+        }
+     /*   //获取keylist
         final ScanOptions scanOptions = ScanOptions.scanOptions().match(RedisKeyConstant.ILLUST_BROWSING_HISTORY_REDIS_PRE + "*").build();
         RedisConnection connection = stringRedisTemplate.getConnectionFactory().getConnection();
         Cursor<byte[]> cursor = connection.scan(scanOptions);
         int i = 0;
         while (cursor.hasNext()) {
-            connection.zRemRangeByScore(cursor.next(), LocalDateTime.now().plusDays(-4).toEpochSecond(ZoneOffset.of("+8")), -Integer.MAX_VALUE);
+            connection.zRemRangeByScore(cursor.next(), LocalDateTime.now().plusDays(-3).toEpochSecond(ZoneOffset.of("+8")), -Integer.MAX_VALUE);
             i++;
-        }
+        }*/
         illustHistoryMapper.deleteIllustHistory();
         illustHistoryMapper.tempToIllustHistory();
         illustHistoryMapper.truncateTemp();

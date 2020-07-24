@@ -16,6 +16,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Async;
@@ -23,7 +25,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -47,21 +48,26 @@ public class CollectionService {
     private final IllustrationBizService illustrationBizService;
     private final CollectionTagSearchUtil collectionTagSearchUtil;
 
-
-    public Boolean createCollection(Integer userId, Collection collection) {
+    public Integer createCollection(Integer userId, Collection collection) {
         //去除敏感词
-        collection.getTagList().forEach(e -> {
-            e.setTagName(sensitiveFilter.filter(e.getTagName()));
-        });
+        List<CollectionTag> tagList = collection.getTagList();
+        if (tagList != null && tagList.size() > 0) {
+            tagList.forEach(e -> {
+                e.setTagName(sensitiveFilter.filter(e.getTagName()));
+            });
+        }
         collection.setCreateTime(LocalDateTime.now());
         //插入画集
-        collectionMapper.createCollection(userId, collection);
+        collection.setUserId(userId);
+        collectionMapper.createCollection(collection);
+        //更新汇总
+        dealUserCollectionSummary(userId);
         //异步将tag入库
         //insertCollectionTag(collection);
-        return true;
+        return collection.getId();
     }
 
-    @Async
+    @Async("saveToDBExecutorService")
     public void insertCollectionTag(Collection collection) {
         List<CollectionTag> tagList = collection.getTagList();
         if (tagList != null && tagList.size() > 0) {
@@ -70,6 +76,9 @@ public class CollectionService {
     }
 
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(value = "collections", key = "#collection.id")
+    })
     public Boolean updateCollection(Integer userId, Collection collection) {
         if (collection.getId() == null) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "更新画集出错");
@@ -79,16 +88,23 @@ public class CollectionService {
         collectionMapper.updateCollection(userId, collection);
         //是否修改了可见性
         //修改则清空收藏数以及收藏数据
-        //异步将tag入库
-        insertCollectionTag(collection);
+        //更新汇总
+        dealUserCollectionSummary(userId);
         return true;
     }
 
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(value = "collections", key = "#collectionId")
+    })
     public Boolean deleteCollection(Integer userId, Integer collectionId) {
         //删除收藏、点赞、浏览量数据
         if (collectionMapper.deleteCollection(userId, collectionId) == 1) {
+            //mysql清除
             collectionMapper.deleteCollectionBookmark(collectionId);
+            //更新汇总
+            dealUserCollectionSummary(userId);
+            //redis清除
             stringRedisTemplate.delete(RedisKeyConstant.COLLECTION_BOOKMARK_REDIS_PRE + collectionId);
             stringRedisTemplate.delete(RedisKeyConstant.COLLECTION_LIKE_REDIS_PRE + collectionId);
             stringRedisTemplate.delete(RedisKeyConstant.COLLECTION_TOTAL_PEOPLE_SEEN_REDIS_PRE + collectionId);
@@ -101,12 +117,16 @@ public class CollectionService {
     public Boolean addIllustrationToCollection(Integer userId, Integer collectionId, Illustration illustration) {
         //校验collectionId是否属于用户
         checkCollectionAuth(collectionId, userId);
-        Collection collection = queryCollectionById(collectionId);
+        Collection collection = queryCollectionByIdFromDb(collectionId);
         //插入
-        collectionMapper.incrCollectionIllustCount(collectionId);
-        collectionMapper.addIllustrationToCollection(collectionId, illustration.getId());
-        if (collection.getIllustCount() == 0) {
-            collectionMapper.updateCollectionCover(collectionId, illustrationBizService.queryIllustrationById(illustration.getId()));
+        try {
+            collectionMapper.incrCollectionIllustCount(collectionId);
+            collectionMapper.addIllustrationToCollection(collectionId, illustration.getId());
+            if (collection.getIllustCount() == 0) {
+                collectionMapper.updateCollectionCover(collectionId, illustrationBizService.queryIllustrationById(illustration.getId()));
+            }
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST, "画作在该画集中已经存在");
         }
         return true;
     }
@@ -123,7 +143,7 @@ public class CollectionService {
 
     @Cacheable("collectionAuth")
     public boolean checkCollectionAuth(Integer collectionId, Integer userId) {
-        Collection collection = queryCollectionById(collectionId);
+        Collection collection = queryCollectionByIdFromDb(collectionId);
         if (collection.getUserId().compareTo(userId) == 0) {
             return true;
         }
@@ -133,6 +153,17 @@ public class CollectionService {
 
     public boolean checkCollectionUpdateStatus(Integer collectionId) {
         return stringRedisTemplate.opsForValue().setIfAbsent(COLLECTION_REORDER_LOCK + collectionId, "Y", 10, TimeUnit.SECONDS);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Boolean updateIllustrationOrder(Integer collectionId, List<Integer> illustIdList, Integer userId) {
+        //校验collectionId是否属于用户
+        checkCollectionAuth(collectionId, userId);
+        //删除0到size的联系数据
+        collectionMapper.deleteIllustrationByIndexFromCollection(collectionId, illustIdList.size());
+        //插入数据
+        collectionMapper.insertIllustrationByIndexToCollection(collectionId, illustIdList);
+        return true;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -206,15 +237,7 @@ public class CollectionService {
         return collectionMapper.queryIllustrationOrder(collectionId, illustrationId);
     }
 
-    public List<Collection> queryUserCollection(Integer userId, Integer isPublic, Integer page, Integer pageSize) {
-        //是否登陆，是否查看本人画集
-        Map<String, Object> context = AppContext.get();
-        Integer isSelf = 0;
-        if (context != null && context.get(AuthConstant.USER_ID) != null) {
-            if ((int) context.get(AuthConstant.USER_ID) == userId) {
-                isSelf = 1;
-            }
-        }
+    public List<Collection> queryUserCollection(Integer userId, Integer isSelf, Integer isPublic, Integer page, Integer pageSize) {
         List<Integer> collectionIdList = collectionMapper.queryUserCollection(userId, (page - 1) * pageSize, pageSize, isSelf, isPublic);
         return queryCollectionById(collectionIdList);
     }
@@ -237,8 +260,14 @@ public class CollectionService {
         return illustrationBizService.queryIllustrationByIllustIdList(illustIdList);
     }
 
-    @Cacheable("collections")
     public Collection queryCollectionById(Integer collectionId) {
+        Collection collection = queryCollectionByIdFromDb(collectionId);
+        pullStaticInfo(collection);
+        return collection;
+    }
+
+    @Cacheable(value = "collections", key = "#collectionId")
+    public Collection queryCollectionByIdFromDb(Integer collectionId) {
         return collectionMapper.queryCollectionById(collectionId);
     }
 
@@ -261,7 +290,7 @@ public class CollectionService {
         return collectionTagSearchUtil.search(keyword);
     }
 
-    //@Async
+    @Async("saveToDBExecutorService")
     public void modifyTotalBookmark(Integer collectionId, Integer modify) {
         if (modify > 0) {
             collectionMapper.incrCollectionTotalBookmark(collectionId);
@@ -270,14 +299,18 @@ public class CollectionService {
         }
     }
 
-    @Transactional
-    @Async
+    @Async("saveToDBExecutorService")
     public void modifyLikeCount(Integer collectionId, Integer modify) {
         if (modify > 0) {
             collectionMapper.incrCollectionTotalLike(collectionId);
         } else {
             collectionMapper.decrCollectionTotalLike(collectionId);
         }
+    }
+
+    @Async("saveToDBExecutorService")
+    public void dealStaticInfo(Integer collectionId, Integer totalBookmarked, Integer totalLiked, Integer totalPeopleSeen) {
+        collectionMapper.dealStaticInfo(collectionId, totalBookmarked, totalLiked, totalPeopleSeen);
     }
 
     public void modifyCollectionTotalPeopleSeen(Integer collectionId, String userFinger) {
@@ -287,9 +320,47 @@ public class CollectionService {
     public void pullStaticInfo(Collection collection) {
         Integer collectionId = collection.getId();
         collection.setTotalBookmarked(Math.toIntExact(stringRedisTemplate.opsForSet().size(RedisKeyConstant.COLLECTION_BOOKMARK_REDIS_PRE + collectionId)));
-        ;
-        collection.setTotalLiked(Integer.valueOf(stringRedisTemplate.opsForValue().get(RedisKeyConstant.COLLECTION_LIKE_REDIS_PRE + collectionId)));
+        collection.setTotalLiked(Math.toIntExact(stringRedisTemplate.opsForSet().size(RedisKeyConstant.COLLECTION_LIKE_REDIS_PRE + collectionId)));
         collection.setTotalPeopleSeen(Math.toIntExact(stringRedisTemplate.opsForHyperLogLog().size((RedisKeyConstant.COLLECTION_TOTAL_PEOPLE_SEEN_REDIS_PRE + collectionId))));
         //处理是否点赞
+        //处理是否收藏
+        //异步更新数据库
+        dealStaticInfo(collection.getId(), collection.getTotalBookmarked(), collection.getTotalLiked(), collection.getTotalPeopleSeen());
+    }
+
+    @Transactional
+    @Caching(evict = {
+            @CacheEvict(value = "collectionSummary", key = "#userId+'-0'"),
+            @CacheEvict(value = "collectionSummary", key = "#userId+'-1'")
+    })
+    public void dealUserCollectionSummary(Integer userId) {
+        collectionMapper.dealUserPublicCollectionSummary(userId);
+        collectionMapper.dealUserPrivateCollectionSummary(userId);
+    }
+
+    @Cacheable(value = "collectionSummary", key = "#userId+'-'+#isPublic")
+    public Integer queryCollectionSummary(Integer userId, Integer isPublic) {
+        return collectionMapper.queryCollectionSummary(userId, isPublic);
+    }
+
+    public void modifyUserTotalBookmarkCollection(Integer userId, int modify) {
+        collectionMapper.modifyUserTotalBookmarkCollection(userId, modify);
+    }
+
+    public Integer queryUserTotalBookmarkCollection(Integer userId) {
+        return collectionMapper.queryUserTotalBookmarkCollection(userId);
+    }
+
+    public Collection getCollection(Integer collectionId) {
+        Collection collection = queryCollectionById(collectionId);
+        if (collection.getIsPublic() == 0) {
+            Map<String, Object> context = AppContext.get();
+            if (context != null && context.get(AuthConstant.USER_ID) != null && context.get(AuthConstant.USER_ID) == collection.getUserId()) {
+                return collection;
+            } else {
+                throw new BusinessException(HttpStatus.FORBIDDEN, "禁止查看他人未公开画集");
+            }
+        }
+        return collection;
     }
 }

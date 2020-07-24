@@ -11,6 +11,7 @@ import dev.cheerfun.pixivic.common.po.Artist;
 import dev.cheerfun.pixivic.common.po.Illustration;
 import dev.cheerfun.pixivic.common.util.pixiv.RequestUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -36,6 +37,7 @@ import java.util.stream.Collectors;
  * @description ArtistService
  */
 @Service
+@Slf4j
 @RequiredArgsConstructor(onConstructor = @__(@Autowired))
 public class ArtistService {
     private final RequestUtil requestUtil;
@@ -56,6 +58,31 @@ public class ArtistService {
         if (artists != null && artists.size() > 0)
             return artists.get(0);
         return null;
+    }
+
+    public void pullArtistAllIllust(Integer artistId) {
+        log.info("开始全量爬取画师：" + artistId + "的画作");
+        boolean flag = true;
+        int offset = 0;
+        while (flag) {
+            log.info("开始抓取画师：" + artistId + "的第" + offset + "页作品");
+            try {
+                IllustsDTO illustrationDetailDTO = (IllustsDTO) requestUtil.getJsonSync("https://proxy.pixivic.com:23334/v1/user/illusts?user_id=" + artistId + "&offset=" + offset * 30, IllustsDTO.class);
+                if (illustrationDetailDTO != null && illustrationDetailDTO.getIllusts() != null && illustrationDetailDTO.getIllusts().size() > 0) {
+                    illustrationService.saveToDb(illustrationDetailDTO.getIllusts().stream().map(IllustrationDTO::castToIllustration).collect(Collectors.toList()));
+                    log.info("抓取画师：" + artistId + "的第" + offset + "页作品成功");
+                    offset++;
+                } else {
+                    flag = false;
+                    log.info("画师：" + artistId + "共有" + offset + "页作品成功");
+                    updateArtistSummary(artistId);
+                }
+            } catch (Exception exception) {
+                flag = false;
+                log.error("抓取画师：" + artistId + "的第" + offset + "页作品失败");
+            }
+        }
+
     }
 
     public void pullArtistIllustList() throws IOException, InterruptedException {
@@ -146,7 +173,6 @@ public class ArtistService {
                             try {
                                 artist = ArtistDTO.castToArtist(objectMapper.readValue(result, new TypeReference<ArtistDTO>() {
                                 }));
-
                             } catch (IOException e) {
                                 return null;
                             }
@@ -154,16 +180,16 @@ public class ArtistService {
                         });
                 return artistCompletableFuture.get();
             } catch (InterruptedException | ExecutionException e) {
-                System.out.println("抓取画师信息错误" + e.getMessage());
+                log.error("抓取画师信息错误" + e.getMessage());
+                return null;
             }
-            return null;
         }).filter(Objects::nonNull).collect(Collectors.toList());
-        if (artistList.size() != 0) {
-            CompletableFuture.supplyAsync(() -> {
-                //更新画师汇总
-                updateArtistSummary(artistIds);
-                return artistMapper.insert(artistList);
-            }).thenAccept(e -> System.out.println("画师信息入库完毕"));
+        if (artistList.size() > 0) {
+            log.info("画师信息为");
+            artistList.forEach(System.out::println);
+            artistMapper.insert(artistList);
+            updateArtistSummary(artistIds);
+            System.out.println("画师信息入库完毕");
         }
         return artistList;
     }

@@ -39,7 +39,6 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
@@ -74,7 +73,7 @@ public class SearchService {
 
     @Cacheable(value = "candidateWords")
     public CompletableFuture<PixivSearchCandidatesResponse> getCandidateWords(@SensitiveCheck String keyword) {
-        return requestUtil.getJson("https://proxy.pixivic.com:23334/v1/search/autocomplete?word=" + URLEncoder.encode(keyword, Charset.defaultCharset()))
+/*        return requestUtil.getJson("https://proxy.pixivic.com:23334/v1/search/autocomplete?word=" + URLEncoder.encode(keyword, Charset.defaultCharset()))
                 .orTimeout(2, TimeUnit.SECONDS)
                 .thenApply(r -> {
                     PixivSearchCandidatesResponse pixivSearchCandidatesResponse = null;
@@ -85,7 +84,8 @@ public class SearchService {
                         e.printStackTrace();
                     }
                     return pixivSearchCandidatesResponse;
-                });
+                });*/
+        throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "暂时不可用");
     }
 
     @Cacheable(value = "searchSuggestions")
@@ -114,7 +114,8 @@ public class SearchService {
                 .GET()
                 .build();
         return httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString())
-                .orTimeout(2, TimeUnit.SECONDS).thenApply(r -> {
+                // .orTimeout(2, TimeUnit.SECONDS)
+                .thenApply(r -> {
                     String body = r.body();
                     if (!body.contains("\"body\":[]") && !body.contains("\"tagTranslation\":[]"))
                         try {
@@ -133,6 +134,7 @@ public class SearchService {
                     // List<SearchSuggestion> searchSuggestions = null;
                     return null;
                 });
+        // throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "暂时不可用");
     }
 
     @Scheduled(cron = "0 0/5 * * * ? ")
@@ -221,14 +223,16 @@ public class SearchService {
         try {
             youdaoTranslatedResponse = (YoudaoTranslatedResponse) httpClient.send(httpRequest, JsonBodyHandler.jsonBodyHandler(YoudaoTranslatedResponse.class)).body();
         } catch (IOException | InterruptedException e) {
-            e.printStackTrace();
+            throw new SearchException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
-        assert youdaoTranslatedResponse != null;
-        List<String> keywordTranslated = youdaoTranslatedResponse.getResult();
-        if (keywordTranslated == null) {
-            throw new SearchException(HttpStatus.BAD_REQUEST, "关键词非中文，自动翻译失败");
+        if (youdaoTranslatedResponse != null) {
+            List<String> keywordTranslated = youdaoTranslatedResponse.getResult();
+            if (keywordTranslated == null) {
+                throw new SearchException(HttpStatus.BAD_REQUEST, "关键词非中文，自动翻译失败");
+            }
+            return keywordTranslated.get(0);
         }
-        return keywordTranslated.get(0);
+        throw new SearchException(HttpStatus.BAD_REQUEST, "自动翻译失败");
     }
 
     public Illustration queryFirstSearchResult(String keyword) throws ExecutionException, InterruptedException {

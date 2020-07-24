@@ -4,8 +4,10 @@ import dev.cheerfun.pixivic.basic.auth.annotation.PermissionRequired;
 import dev.cheerfun.pixivic.basic.auth.constant.PermissionLevel;
 import dev.cheerfun.pixivic.basic.auth.exception.AuthBanException;
 import dev.cheerfun.pixivic.basic.auth.exception.AuthLevelException;
+import dev.cheerfun.pixivic.basic.auth.mapper.AuthMapper;
 import dev.cheerfun.pixivic.basic.auth.util.JWTUtil;
 import dev.cheerfun.pixivic.common.constant.AuthConstant;
+import dev.cheerfun.pixivic.common.constant.RedisKeyConstant;
 import dev.cheerfun.pixivic.common.context.AppContext;
 import dev.cheerfun.pixivic.common.util.JoinPointArgUtil;
 import lombok.RequiredArgsConstructor;
@@ -18,14 +20,20 @@ import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.core.annotation.Order;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.RequestHeader;
 
+import javax.annotation.PostConstruct;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 
 /**
  * @author OysterQAQ
@@ -41,9 +49,18 @@ import java.util.concurrent.CompletableFuture;
 public class AuthProcessor {
     private final JWTUtil jwtUtil;
     private final JoinPointArgUtil commonUtil;
+    private final StringRedisTemplate stringRedisTemplate;
+    private final ExecutorService saveToDBExecutorService;
+    private final AuthMapper authMapper;
+    private Map<Integer, Integer> waitForUpdateUserList = new ConcurrentHashMap<>(10000 * 10);
 
     @Pointcut(value = "@annotation(dev.cheerfun.pixivic.basic.auth.annotation.PermissionRequired)||@within(dev.cheerfun.pixivic.basic.auth.annotation.PermissionRequired)")
     public void pointCut() {
+    }
+
+    @PostConstruct
+    public void init() {
+        dealWaitForUpdateUserList();
     }
 
     @Around(value = "pointCut()")
@@ -59,14 +76,17 @@ public class AuthProcessor {
         过期则抛出自定义未授权过期异常*/
         if (token != null) {
             Map<String, Object> claims = jwtUtil.validateToken(token);
+            //放入threadlocal
             AppContext.set(claims);
-            if ((Integer) claims.get(AuthConstant.IS_BAN) == 0) {
+            if ((Integer) claims.get(AuthConstant.IS_BAN) == 0 || stringRedisTemplate.opsForSet().isMember(RedisKeyConstant.ACCOUNT_BAN_SET, String.valueOf(claims.get(AuthConstant.USER_ID)))) {
                 throw new AuthBanException(HttpStatus.FORBIDDEN, "账户异常");
             }
             if ((Integer) claims.get(AuthConstant.PERMISSION_LEVEL) < authLevel) {
                 throw new AuthLevelException(HttpStatus.FORBIDDEN, "用户权限不足");
             }
-            //放入threadlocal
+            //放入等待更新map
+            waitForUpdateUserList.put((Integer) claims.get(AuthConstant.USER_ID), 1);
+            //放行
             Object proceed = joinPoint.proceed();
             //清除Threadlocal中的数据
             AppContext.remove();
@@ -94,5 +114,23 @@ public class AuthProcessor {
                     .body(responseEntity.getBody());
         }
         return responseEntity;
+    }
+
+    public void dealWaitForUpdateUserList() {
+        saveToDBExecutorService.submit(() -> {
+            while (true) {
+                try {
+                    if (!waitForUpdateUserList.isEmpty()) {
+                        Set<Integer> userSet = waitForUpdateUserList.keySet();
+                        authMapper.updateUserLastActiveTime(userSet);
+                        waitForUpdateUserList.clear();
+                    }
+                    Thread.sleep(1000 * 60);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+
     }
 }

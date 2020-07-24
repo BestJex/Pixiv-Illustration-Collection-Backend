@@ -155,7 +155,7 @@ public class IllustrationService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    @Async
+    @Async("saveToDBExecutorService")
     public void saveToDb(List<Illustration> illustrations) {
         List<Tag> tags = illustrations.stream().parallel().map(Illustration::getTags).flatMap(Collection::stream).collect(Collectors.toList());
         if (tags.size() > 0) {
@@ -170,6 +170,8 @@ public class IllustrationService {
         } else {
             System.out.println("标签为null");
         }
+        //更新画师名称与账号
+        illustrations.stream().map(Illustration::getArtistPreView).forEach(illustrationMapper::updateArtistPreView);
         //Lists.partition(illustrations, 50).forEach(illustrationMapper::insert);
         illustrationMapper.batchInsert(illustrations);
         System.out.println("画作入库完毕");

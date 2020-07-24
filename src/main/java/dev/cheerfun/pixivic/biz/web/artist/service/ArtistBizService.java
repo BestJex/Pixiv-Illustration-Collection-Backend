@@ -47,7 +47,7 @@ public class ArtistBizService {
     private final StringRedisTemplate stringRedisTemplate;
     private final ArtistBizMapper artistBizMapper;
     private final ArtistService artistService;
-    private final ExecutorService executorService;
+    private final ExecutorService crawlerExecutorService;
     private final IllustrationBizService illustrationBizService;
     private final ArtistSearchUtil artistSearchUtil;
     private LinkedBlockingQueue<String> waitForPullArtistQueue;
@@ -60,13 +60,14 @@ public class ArtistBizService {
         LocalDate now = LocalDate.now();
         today = now.toString();
         yesterday = now.plusDays(-1).toString();
-        waitForPullArtistQueue = new LinkedBlockingQueue<>(10 * 1000);
-        waitForPullArtistInfoQueue = new LinkedBlockingQueue<>(10 * 1000);
+        waitForPullArtistQueue = new LinkedBlockingQueue<>(100 * 1000);
+        waitForPullArtistInfoQueue = new LinkedBlockingQueue<>(100 * 1000);
     }
 
     @PostConstruct
     public void init() {
         dealWaitForPullArtistQueue();
+        dealWaitForPullArtistInfoQueue();
     }
 
     @Scheduled(cron = "0 1 0 * * ?")
@@ -105,13 +106,12 @@ public class ArtistBizService {
     }
 
     @Cacheable(value = "artist")
-    public Artist queryArtistById(Integer artistId) throws InterruptedException {
+    public Artist queryArtistById(Integer artistId) {
         Artist artist = artistBizMapper.queryArtistById(artistId);
         if (artist == null) {
-            waitForPullArtistInfoQueue.put(artistId);
+            waitForPullArtistInfoQueue.offer(artistId);
             throw new BusinessException(HttpStatus.NOT_FOUND, "画师不存在");
         }
-
         return artist;
     }
 
@@ -125,19 +125,18 @@ public class ArtistBizService {
         //如果是近日首次则进行拉取
         String key = artistId + ":" + type;
         if (currIndex == 0 && pageSize == 30) {
-            waitForPullArtistQueue.put(key);
+            waitForPullArtistQueue.offer(key);
         }
         List<Illustration> illustrations = artistBizMapper.queryIllustrationsByArtistId(artistId, type, currIndex, pageSize);
         return illustrations;
     }
 
     public void dealWaitForPullArtistQueue() {
-        executorService.submit(() -> {
+        crawlerExecutorService.submit(() -> {
             while (true) {
                 //处理画师画作
                 String key = null;
                 //处理画师详情
-                Integer artistId = null;
                 try {
                     key = waitForPullArtistQueue.take();
                     Boolean todayCheck = stringRedisTemplate.opsForSet().isMember(RedisKeyConstant.ARTIST_LATEST_ILLUSTS_PULL_FLAG + today, key);
@@ -149,17 +148,30 @@ public class ArtistBizService {
                         artistService.pullArtistLatestIllust(Integer.valueOf(split[0]), split[1]);
                         log.info("获取画师(id:" + split[0] + ")首页画作完毕");
                     }
-
-                    artistId = waitForPullArtistInfoQueue.take();
-                    log.info("开始从Pixiv获取画师(id:" + artistId + ")信息");
-                    artistService.pullArtistsInfo(artistId);
-                    log.info("获取画师(id:" + artistId + ")信息完毕");
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
             }
         });
 
+    }
+
+    public void dealWaitForPullArtistInfoQueue() {
+        crawlerExecutorService.submit(() -> {
+            while (true) {
+                Integer artistId = null;
+                try {
+                    artistId = waitForPullArtistInfoQueue.take();
+                    log.info("开始从Pixiv获取画师(id:" + artistId + ")信息");
+                    artistService.pullArtistsInfo(artistId);
+                    log.info("获取画师(id:" + artistId + ")信息完毕");
+                    artistService.pullArtistAllIllust(artistId);
+                } catch (Exception exception) {
+                    log.error("获取画师(id:" + artistId + ")信息失败");
+                    exception.printStackTrace();
+                }
+            }
+        });
     }
 
     @Cacheable(value = "artistSummarys")
@@ -175,7 +187,7 @@ public class ArtistBizService {
         }
         CompletableFuture<List<ArtistSearchDTO>> request = artistSearchUtil.search(artistName, page, pageSize);
         Integer finalUserId = userId;
-        return request.thenApply(e -> e.stream().parallel().map(artistSearchDTO ->
+        return request.thenApply(e -> e.stream().parallel().filter(Objects::nonNull).map(artistSearchDTO ->
         {
             List<Illustration> illustrations = null;
             try {
@@ -186,5 +198,10 @@ public class ArtistBizService {
             }
             return null;
         }).filter(Objects::nonNull).collect(Collectors.toList()));
+    }
+
+    public Boolean pullArtistAllIllust(Integer artistId) {
+        artistService.pullArtistAllIllust(artistId);
+        return true;
     }
 }

@@ -10,11 +10,5 @@ import java.lang.annotation.*;
 public @interface CreditDeal {
     int value() default 0;
 
-    int option() default CreditOption.INCREASE;
-
-    boolean isRandom() default false;
-
-    int randomStart();
-
-    int randomEnd();
+    String desc();//描述
 }

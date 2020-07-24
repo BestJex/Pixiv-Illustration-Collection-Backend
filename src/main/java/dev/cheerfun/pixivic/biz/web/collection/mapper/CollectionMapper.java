@@ -29,8 +29,9 @@ public interface CollectionMapper {
     Integer reOrderIllustration(Integer collectionId);
 
     @Insert("insert into collections (user_id, username,title,cover,caption,tag_list,is_public,forbid_comment,porn_warning,create_time) " +
-            "values (#{userId}, #{collection.username}, #{collection.title}, #{collection.cover,typeHandler=dev.cheerfun.pixivic.common.util.json.JsonTypeHandler}, #{collection.caption},#{collection.tagList,typeHandler=dev.cheerfun.pixivic.common.util.json.JsonTypeHandler},#{collection.isPublic}, #{collection.forbidComment}, #{collection.pornWarning}, #{collection.createTime,typeHandler=org.apache.ibatis.type.LocalDateTimeTypeHandler})")
-    Integer createCollection(@Param("userId") Integer userId, @Param("collection") Collection collection);
+            "values (#{userId}, #{username}, #{title}, #{cover,typeHandler=dev.cheerfun.pixivic.common.util.json.JsonTypeHandler}, #{caption},#{tagList,typeHandler=dev.cheerfun.pixivic.common.util.json.JsonTypeHandler},#{isPublic}, #{forbidComment}, #{pornWarning}, #{createTime,typeHandler=org.apache.ibatis.type.LocalDateTimeTypeHandler})")
+    @Options(useGeneratedKeys = true, keyProperty = "id", keyColumn = "collection_id")
+    Integer createCollection(Collection collection);
 
     @Insert({
             "<script>",
@@ -82,7 +83,7 @@ public interface CollectionMapper {
     @Update("update collections set illust_count=illust_count+1 where collection_id=#{collectionId}")
     void incrCollectionIllustCount(Integer collectionId);
 
-    @Insert("insert into collection_illust_relation  (collection_id, illust_id,order_num) values (#{collectionId}, #{illustrationId},(select illust_count from collections where collection_id=#{collectionId})*10000)")
+    @Insert("insert into collection_illust_relation  (collection_id, illust_id,order_num) values (#{collectionId}, #{illustrationId},(select illust_count from collections where collection_id=#{collectionId}))")
     void addIllustrationToCollection(Integer collectionId, Integer illustrationId);
 
     @Select("   SELECT IFNULL(( " +
@@ -105,10 +106,15 @@ public interface CollectionMapper {
             "<script>",
             "select collection_id from collections where use_flag=1 and  is_public ",
             "<if test=\"isSelf==0\">\n",
-            "=0",
+            "= 1",
             "</if>",
             "<if test=\"isSelf==1\">\n",
+            "<if test=\"isPublic==null\">\n",
+            "in (0,1)",
+            "</if>",
+            "<if test=\"isPublic!=null\">\n",
             "= #{isPublic}",
+            "</if>",
             "</if>",
             "and user_id=#{userId} order by create_time limit #{currIndex},#{pageSize}",
             "</script>"
@@ -151,4 +157,68 @@ public interface CollectionMapper {
 
     @Update("update collections set total_liked=total_liked-1 where collection_id =  #{collectionId} ")
     Integer decrCollectionTotalLike(Integer collectionId);
+
+    @Update("update user_summary\n" +
+            "set private_collection_sum=(select count(*)\n" +
+            "                            from collections\n" +
+            "                            where use_flag = 1 and is_public = 1 and collections.user_id = #{userId})\n" +
+            "where user_id = #{userId}")
+    Integer dealUserPublicCollectionSummary(Integer userId);
+
+    @Update("update user_summary\n" +
+            "set private_collection_sum=(select count(*)\n" +
+            "                            from collections\n" +
+            "                            where use_flag = 1 and is_public = 0 and collections.user_id = #{userId})\n" +
+            "where user_id = #{userId}")
+    Integer dealUserPrivateCollectionSummary(Integer userId);
+
+    @Select({
+            "<script>",
+            "select ",
+            "<if test=\"isPublic==0\">\n",
+            "private_collection_sum",
+            "</if>",
+            "<if test=\"isPublic==1\">\n",
+            "public_collection_sum",
+            "</if>",
+            "<if test=\"isPublic==null\">\n",
+            "public_collection_sum+private_collection_sum",
+            "</if>",
+            "from user_summary where user_id=#{userId}",
+            "</script>"
+    })
+    Integer queryCollectionSummary(Integer userId, Integer isPublic);
+
+    @Update("update collections\n" +
+            "set total_bookmarked=#{totalBookmarked},\n" +
+            "    total_liked=#{totalLiked},\n" +
+            "    total_people_seen=#{totalPeopleSeen}\n" +
+            "where collection_id = #{collectionId}")
+    Integer dealStaticInfo(Integer collectionId, Integer totalBookmarked, Integer totalLiked, Integer totalPeopleSeen);
+
+    @Update("update user_summary\n" +
+            "set bookmark_collection_sum = bookmark_collection_sum + #{modify}\n" +
+            "where user_id = #{userId}")
+    Integer modifyUserTotalBookmarkCollection(Integer userId, int modify);
+
+    @Select("select bookmark_collection_sum\n" +
+            "from user_summary\n" +
+            "where user_id = #{userId}")
+    Integer queryUserTotalBookmarkCollection(Integer userId);
+
+    @Delete("delete\n" +
+            "from collection_illust_relation\n" +
+            "where collection_id = #{collectionId}\n" +
+            "  and order_num between 0 and #{size}")
+    void deleteIllustrationByIndexFromCollection(Integer collectionId, Integer size);
+
+    @Insert({
+            "<script>",
+            "insert IGNORE into collection_illust_relation(collection_id, illust_id,order_num) values ",
+            "<foreach collection='illustIdList' item='illustId' index='index' separator=','>",
+            "(#{collectionId},#{illustId}, #{index})",
+            "</foreach>",
+            "</script>"
+    })
+    void insertIllustrationByIndexToCollection(Integer collectionId, List<Integer> illustIdList);
 }

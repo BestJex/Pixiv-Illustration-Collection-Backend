@@ -17,12 +17,11 @@ import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.annotation.Pointcut;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.annotation.Order;
-import org.springframework.data.redis.connection.StringRedisConnection;
-import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -74,11 +73,11 @@ public class UserInfoProcessor {
             if (data.get(0) instanceof ArtistWithRecentlyIllusts) {
                 List<ArtistWithRecentlyIllusts> result = data;
                 result.stream().parallel().forEach(r -> {
-                    dealIsLikedInfoForIllustList(r.getRecentlyIllustrations(), userId);
+                    dealIsLikedInfoForIllustList(r.getRecentlyIllustrations(), userId, r.getIsFollowed());
                 });
                 return;
             }
-            dealIsLikedInfoForIllustList(body.getData(), userId);
+            dealIsLikedInfoForIllustList(body.getData(), userId, null);
 
         }
     }
@@ -87,7 +86,7 @@ public class UserInfoProcessor {
         Map<String, Object> context = AppContext.get();
         if (context != null && context.get(AuthConstant.USER_ID) != null) {
             int userId = (int) context.get(AuthConstant.USER_ID);
-            return dealIsLikedInfoForIllustList(illustrationList, userId);
+            return dealIsLikedInfoForIllustList(illustrationList, userId, null);
         }
         return illustrationList;
 
@@ -99,21 +98,17 @@ public class UserInfoProcessor {
         return null;
     }
 
-    public List<Illustration> dealIsLikedInfoForIllustList(List<Illustration> illustrationList, int userId) {
-        List<Object> isLikedList = stringRedisTemplate.executePipelined((RedisCallback<String>) redisConnection -> {
-            for (Illustration illustration : illustrationList) {
-                StringRedisConnection stringRedisConnection = (StringRedisConnection) redisConnection;
-                stringRedisConnection.sIsMember(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustration.getId()));
+    public List<Illustration> dealIsLikedInfoForIllustList(List<Illustration> illustrationList, int userId, Boolean isFollowed) {
+        List<Object> isLikedList = new ArrayList<>(illustrationList.size());
+        List<Object> isFollowedList = new ArrayList<>(illustrationList.size());
+        for (int i = 0; i < illustrationList.size(); i++) {
+            isLikedList.add(i, stringRedisTemplate.opsForSet().isMember(RedisKeyConstant.BOOKMARK_REDIS_PRE + userId, String.valueOf(illustrationList.get(i).getId())));
+            if (isFollowed != null) {
+                isFollowedList.add(isFollowed);
+            } else {
+                isFollowedList.add(i, stringRedisTemplate.opsForSet().isMember(RedisKeyConstant.ARTIST_FOLLOW_REDIS_PRE + illustrationList.get(i).getArtistId(), String.valueOf(userId)));
             }
-            return null;
-        });
-        List<Object> isFollowedList = stringRedisTemplate.executePipelined((RedisCallback<String>) redisConnection -> {
-            for (Illustration illustration : illustrationList) {
-                StringRedisConnection stringRedisConnection = (StringRedisConnection) redisConnection;
-                stringRedisConnection.sIsMember(RedisKeyConstant.ARTIST_FOLLOW_REDIS_PRE + illustration.getArtistId(), String.valueOf(userId));
-            }
-            return null;
-        });
+        }
         int size = isLikedList.size();
         for (int i = 0; i < size; i++) {
             IllustrationWithLikeInfo illustrationWithLikeInfo = new IllustrationWithLikeInfo(illustrationList.get(i), (Boolean) isLikedList.get(i));

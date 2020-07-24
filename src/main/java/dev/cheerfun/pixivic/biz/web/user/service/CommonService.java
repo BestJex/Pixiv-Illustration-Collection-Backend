@@ -60,6 +60,8 @@ public class CommonService {
         emailUtil.sendEmail(user.getEmail(), user.getUsername(), PIXIVIC, CONTENT_1, "https://pixivic.com/emailCheck?vid=" + emailVerificationCode.getVid() + "&value=" + emailVerificationCode.getValue() + "&userId=" + user.getId() + "&email=" + user.getEmail());
         user = userMapper.queryUserByusernameAndPassword(user.getUsername(), user.getPassword());
         userMapper.setAvatar(AVATAR_PRE + user.getId() + AVATAR_POS, user.getId());
+        //初始化汇总表
+        userMapper.initSummary(user.getId());
         user.setAvatar(AVATAR_PRE + user.getId() + AVATAR_POS);
         return user;
     }
@@ -110,12 +112,12 @@ public class CommonService {
     }
 
     public void getResetPasswordEmail(String email) throws MessagingException {
-        if (checkEmail(email)) {
+        //if (checkEmail(email)) {
             EmailBindingVerificationCode emailVerificationCode = verificationCodeService.getEmailVerificationCode(email);
             emailUtil.sendEmail(email, "亲爱的用户", PIXIVIC, CONTENT_2, "https://pixivic.com/resetPassword?vid=" + emailVerificationCode.getVid() + "&value=" + emailVerificationCode.getValue());
-        } else {
+       /* } else {
             throw new UserCommonException(HttpStatus.NOT_FOUND, "用户邮箱不存在");
-        }
+        }*/
     }
 
     public void getCheckEmail(String email, int userId) throws MessagingException {
@@ -180,5 +182,10 @@ public class CommonService {
 
     public void updateUserInfo(int userId, User user) {
         userMapper.updateUserInfo(userId, user.getGender(), user.getSignature(), user.getLocation());
+    }
+
+    public Boolean unbindQQ(int userId) {
+        userMapper.unbindQQ(userId);
+        return true;
     }
 }
