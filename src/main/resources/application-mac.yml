@@ -94,3 +94,5 @@ ssh:
 sitemap:
   savePath: /Users/oysterqaq/PIC/sitemap/
   remoteSavePath: /home/sitemap
+graphicsMagick:
+  path: /usr/local/Cellar/graphicsmagick/1.3.35/bin/gm
