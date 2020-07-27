@@ -66,7 +66,7 @@ management:
     health:
       show-details: always
 jjwt:
-  secret: 生蚝QAQ仅是一位兴趣使然的面向ACG编程人员♥♥♥♥♥♥♥♥♥♥♥♥
+  secret: 生蚝QAQ只是一位兴趣使然的面向ACG编程人员(●'◡'●)ﾉ♥♥♥♥♥♥
   expirationTime: 864000
   refreshInterval: 1800000
 pixiv:
