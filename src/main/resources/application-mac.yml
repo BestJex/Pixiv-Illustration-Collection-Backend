@@ -2,24 +2,24 @@ server:
   port: 8080
 spring:
   mail:
-    host:  smtpdm.aliyun.com
-    username: admin@mail.cheerfun.dev
-    password: CheerfunDEV123
+    host: smtp.office365.com
+    username: oysterqaq@biuz.xyz
+    password: Linhao199741
     protocol: smtp
     properties:
       mail:
         smtp:
           connectiontimeout: 30000
-          writetimeout: 20000
-          timeout: 30000
+          writetimeout: 2000
+          timeout: 3000
           auth: true
           starttls:
             enable: true
             required: true
           socketFactory:
-            port: 465
+            port: 587
             class: javax.net.ssl.SSLSocketFactory
-    port: 465
+    port: 587
   redis:
     jedis:
       pool:
