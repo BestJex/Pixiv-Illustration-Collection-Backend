@@ -17,8 +17,9 @@ spring:
             enable: true
             required: true
           socketFactory:
-            port: 465
+            port: 587
             class: javax.net.ssl.SSLSocketFactory
+    port: 587
   redis:
     jedis:
       pool:
