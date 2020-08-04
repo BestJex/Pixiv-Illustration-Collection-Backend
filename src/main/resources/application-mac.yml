@@ -1,8 +1,12 @@
 server:
   port: 8080
 spring:
+  jpa:
+    show-sql: true
+    hibernate:
+      ddl-auto: update
   mail:
-#    host: smtp.office365.com
+    #    host: smtp.office365.com
     #    username: oysterqaq@biuz.xyz
     #    password: Linhao199741
     host: smtpdm.aliyun.com
