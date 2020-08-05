@@ -3,8 +3,6 @@ server:
 spring:
   jpa:
     show-sql: true
-    hibernate:
-      ddl-auto: update
   mail:
     #    host: smtp.office365.com
     #    username: oysterqaq@biuz.xyz
@@ -46,7 +44,7 @@ spring:
     username: root
     password: root
   datasource:
-    url: jdbc:mysql://mysql:3306/pixivic?serverTimezone=UTC&useUnicode=true&characterEncoding=utf-8
+    url: jdbc:mysql://mysql:3306/pixivic?serverTimezone=UTC&useUnicode=true&characterEncoding=utf-8&charset=utf8mb4
     username: root
     password: Cheerfun.dev
     type: com.alibaba.druid.pool.DruidDataSource
