@@ -1,9 +1,16 @@
 server:
   port: 8080
 spring:
+  data:
+    redis:
+      repositories:
+        enabled: false
   jpa:
     show-sql: true
     database-platform: org.hibernate.dialect.MySQL8Dialect
+    generate-ddl: false
+    hibernate:
+      ddl-auto: none
   mail:
     #    host: smtp.office365.com
     #    username: oysterqaq@biuz.xyz
