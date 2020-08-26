@@ -12,12 +12,9 @@ spring:
     hibernate:
       ddl-auto: none
   mail:
-    host: smtp.office365.com
-    username: oysterqaq@biuz.xyz
+    host: mail
+    username: admin@cheerfun.dev
     password: Cheerfun.dev
-    #host: mail
-    #username: admin@cheerfun.dev
-    #password: Cheerfun.dev
     #    host: smtpdm.aliyun.com
     #    username: admin@mail.cheerfun.dev
     #    password: CheerfunDEV123
